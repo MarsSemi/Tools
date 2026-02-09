@@ -3,7 +3,6 @@
 NetPassClient 是 NetPass 架構的內網執行端。
 使用這個程式後，就可以透過系統配置的 Https Domain，透過 HTTPs 協議遠端存取你寫的 Web Service。
 原理是連接到遠端的 NetPassService，並監聽專屬於本機硬體 ID 的請求訊息，將其轉換為本地 HTTP 呼叫後回傳結果。
-讓你無須申請 Domain Name 以及網路 SSL 憑證，就可安全地讓你的服務遠端運作。
 
 ## 核心功能
 *   **硬體識別 (HWID)**：自動產生 12 位元 MAC 雜湊 ID，無需手動配置識別碼。
