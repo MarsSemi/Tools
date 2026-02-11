@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,13 +13,20 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/gorilla/websocket"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
+
+// -------------------------
+const defaultHost = "https://netpass.mars-cloud.com"
 
 // -------------------------
 // hwID 儲存本機硬體唯一識別碼 (12位元)
@@ -27,6 +35,9 @@ var hwID string
 // -------------------------
 // HttpRequestPayload 定義了從 Broker 接收到的 MQTT 請求資料結構
 type HttpRequestPayload struct {
+	Action     string              `json:"action"`      // 動作 (空或 "tunnel")
+	Token      string              `json:"token"`       // 隧道識別碼
+	TargetPort string              `json:"target_port"` // 目標本地 Port
 	Method     string              `json:"method"`      // HTTP 方法
 	URL        string              `json:"url"`         // 包含路由資訊的路徑
 	Header     map[string][]string `json:"header"`      // 轉發的 Header
@@ -80,26 +91,20 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
 		return
 	}
 
+	// 處理隧道請求 (WebSocket)
+	if payload.Action == "tunnel" {
+		go handleTunnel(payload)
+		return
+	}
+
 	// 1. 解析與顯示請求資訊
 	//pretty, _ := json.MarshalIndent(payload, "", "  ")
 	//fmt.Printf("--------------------------------------------------\n")
 	//fmt.Printf("Received HTTP Request via MQTT [%s]:\n%s\n", msg.Topic(), string(pretty))
 
-	// 2. URL 路由解析 (解析格式: /hwid/port/path)
-	path := strings.TrimPrefix(payload.URL, "/")
-	parts := strings.SplitN(path, "/", 3)
-
-	if len(parts) < 2 {
-		fmt.Printf("Invalid URL format: %s (expected /hwid/port/path)\n", payload.URL)
-		return
-	}
-
-	// 取得目標 Port 與 Path
-	port := parts[1]
-	targetPath := ""
-	if len(parts) > 2 {
-		targetPath = "/" + parts[2]
-	}
+	// 2. 使用傳來的 Port 與 Path
+	port := payload.TargetPort
+	targetPath := payload.URL
 
 	localURL := fmt.Sprintf("http://localhost:%s%s", port, targetPath)
 	//fmt.Printf("Proxying to local : %s %s\n", payload.Method, localURL)
@@ -111,16 +116,59 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
 		return
 	}
 
-	// 複製所有 Header 到本地請求
+	// 複製與清洗 Header
 	for k, vv := range payload.Header {
+		_kl := strings.ToLower(k)
+		if _kl == "host" {
+			continue
+		}
 		for _, v := range vv {
 			req.Header.Add(k, v)
 		}
 	}
+	
+	// 強制設定 Host 為 localhost，避免被 Web Server 拒絕
+	req.Host = "localhost"
 
 	// 執行本地端 API 呼叫
-	httpClient := &http.Client{Timeout: 10 * time.Second}
+	// 設定支援 Insecure TLS 的 Client
+	httpClient := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	// 嘗試 HTTP 呼叫
 	resp, err := httpClient.Do(req)
+
+	// 如果 HTTP 失敗，嘗試切換為 HTTPS
+	// 增加偵測 "EOF" 錯誤
+	_isHTTPSOnly := false
+	if err != nil {
+		_errStr := err.Error()
+		if strings.Contains(_errStr, "EOF") || 
+		   strings.Contains(_errStr, "connection refused") || 
+		   strings.Contains(_errStr, "http: server gave HTTP response to HTTPS client") || 
+		   strings.Contains(_errStr, "malformed HTTP response") {
+			_isHTTPSOnly = true
+		}
+	}
+
+	if _isHTTPSOnly {
+		localURL = fmt.Sprintf("https://localhost:%s%s", port, targetPath)
+		req, _ = http.NewRequest(payload.Method, localURL, bytes.NewBufferString(payload.Body))
+		
+		// 重新設定清洗後的 Header
+		for k, vv := range payload.Header {
+			_kl := strings.ToLower(k)
+			if _kl == "host" { continue }
+			for _, v := range vv { req.Header.Add(k, v) }
+		}
+		req.Host = "localhost"
+		
+		resp, err = httpClient.Do(req)
+	}
 
 	// 準備回傳資料
 	var responsePayload HttpResponsePayload
@@ -134,18 +182,45 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
 		responsePayload.StatusCode = 502
 	} else {
 		defer resp.Body.Close()
-		respBody, _ := io.ReadAll(resp.Body)
-		//fmt.Printf("Local response : %s\n", resp.Status)
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			fmt.Printf("Failed to read response body: %v\n", err)
+			responsePayload.Status = "Error reading response"
+			responsePayload.StatusCode = 502
+		} else {
+			// 判斷是否為文字類資料
+			contentType := resp.Header.Get("Content-Type")
+			isText := strings.Contains(contentType, "text") ||
+				strings.Contains(contentType, "json") ||
+				strings.Contains(contentType, "javascript") ||
+				strings.Contains(contentType, "xml") ||
+				strings.Contains(contentType, "html")
 
-		responsePayload.Status = resp.Status
-		responsePayload.StatusCode = resp.StatusCode
-		responsePayload.Header = resp.Header
-		responsePayload.Body = string(respBody)
+			responsePayload.Status = resp.Status
+			responsePayload.StatusCode = resp.StatusCode
+			responsePayload.Header = resp.Header
+
+			if !isText && len(respBody) > 0 {
+				// 非文字類資料，轉為 Base64
+				responsePayload.Body = base64.StdEncoding.EncodeToString(respBody)
+				// 在 Header 中註明 Base64 格式
+				responsePayload.Header["Content-Transfer-Encoding"] = []string{"base64"}
+				if contentType != "" {
+					responsePayload.Header["Content-Type"] = []string{contentType + "; base64"}
+				}
+			} else {
+				responsePayload.Body = string(respBody)
+			}
+		}
 	}
 
 	// 4. 將執行結果發布回 MQTT (使用 http/response 前綴)
 	responseTopic := fmt.Sprintf("http/response/%s", hwID)
-	jsonResp, _ := json.Marshal(responsePayload)
+	jsonResp, err := json.Marshal(responsePayload)
+	if err != nil {
+		fmt.Printf("Failed to marshal response: %v\n", err)
+		return
+	}
 	token := client.Publish(responseTopic, 1, false, jsonResp)
 	token.Wait()
 
@@ -156,46 +231,471 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
 // connectHandler 連線成功時觸發
 var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
 	fmt.Println("Connected to NetPass Tunnel")
+
+	// 顯示公網存取網址
+	_host := strings.TrimSuffix(clientConfig.Host, "/")
+	fmt.Printf("Public access URL: %s/pass/%s/\n", _host, hwID)
+
 	// 訂閱專屬於此硬體 ID 的請求主題 (配合 MarsCloud 規則)
 	topic := fmt.Sprintf("http/request/%s", hwID)
-	if token := client.Subscribe(topic, 1, nil); token.Wait() && token.Error() != nil {
-		fmt.Printf("Subscribe failed: %v\n", token.Error())
-	} else {
-		fmt.Printf("Subscribed to topic: %s\n", topic)
-	}
+	fmt.Printf("Subscribing to topic: %s...\n", topic)
+
+	// 使用非同步方式訂閱，並設定超時，避免卡死連線執行緒
+	go func() {
+		token := client.Subscribe(topic, 1, nil)
+		if token.WaitTimeout(10 * time.Second) {
+			if token.Error() != nil {
+				fmt.Printf("Subscribe failed: %v\n", token.Error())
+			} else {
+				fmt.Printf("Subscribed to topic: %s\n", topic)
+			}
+		} else {
+			fmt.Println("Subscribe timed out. Will retry automatically by library or next connect.")
+		}
+	}()
 }
 
 // -------------------------
 var connectLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err error) {
-	fmt.Printf("Connect lost: %v. Auto-reconnecting...\n", err)
+	fmt.Printf("Connect lost: %v. Waiting for auto-reconnect...\n", err)
+}
+
+// -------------------------
+// checkUpdate 檢查並執行自動更新
+func checkUpdate() {
+	_execPath, _err := os.Executable()
+	if _err != nil {
+		return
+	}
+
+	// 檢查是否為 go run 模式 (源碼執行)
+	if strings.Contains(_execPath, "go-build") || strings.Contains(_execPath, "/tmp/") {
+		fmt.Println("Source code execution (go run) detected. Skipping auto-update.")
+		return
+	}
+
+	fmt.Println("Checking for updates...")
+	_os := runtime.GOOS
+	_arch := runtime.GOARCH
+
+	_updateURL := fmt.Sprintf("%s/update/%s/%s", strings.TrimSuffix(clientConfig.Host, "/"), _os, _arch)
+
+	_client := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	_resp, err := _client.Get(_updateURL)
+	if err != nil {
+		fmt.Printf("Update check failed: %v\n", err)
+		return
+	}
+	defer _resp.Body.Close()
+
+	if _resp.StatusCode != http.StatusOK {
+		// fmt.Printf("No update available or server error (%d)\n", _resp.StatusCode)
+		return
+	}
+
+	// 這裡簡單用 Content-Length 或 ETag 判斷是否需要更新
+	_fInfo, err := os.Stat(_execPath)
+	if err == nil {
+		// fmt.Printf("Current size: %d, Remote size: %d\n", _fInfo.Size(), _resp.ContentLength)
+		if _fInfo.Size() == _resp.ContentLength {
+			fmt.Println("Already up to date.")
+			return
+		}
+	}
+
+	// 下載到臨時檔案
+	_tmpPath := _execPath + ".tmp"
+	_out, err := os.Create(_tmpPath)
+	if err != nil {
+		fmt.Printf("Failed to create temp file: %v\n", err)
+		return
+	}
+
+	_, err = io.Copy(_out, _resp.Body)
+	_out.Close()
+	if err != nil {
+		fmt.Printf("Download failed: %v\n", err)
+		os.Remove(_tmpPath) // 清理臨時檔案
+		return
+	}
+
+	// 替換執行檔
+	err = os.Chmod(_tmpPath, 0755)
+	if err != nil {
+		fmt.Printf("Failed to set permissions: %v\n", err)
+		os.Remove(_tmpPath) // 清理臨時檔案
+		return
+	}
+
+	err = os.Rename(_tmpPath, _execPath)
+	if err != nil {
+		fmt.Printf("Failed to replace executable: %v\n", err)
+		os.Remove(_tmpPath) // 清理臨時檔案
+		return
+	}
+
+	fmt.Println("Update downloaded. Restarting...")
+	os.Exit(0)
+}
+
+// -------------------------
+// Config 定義設定檔結構
+type Config struct {
+	ApiKey     string `json:"api_key"`
+	Host       string `json:"host"`
+	AutoUpdate bool   `json:"auto_update"`
+}
+
+// -------------------------
+
+var clientConfig Config
+
+// -------------------------
+// loadConfig 從 config.json 載入設定
+func loadConfig() {
+	_file, err := os.Open("config.json")
+	if err != nil {
+		// 設定預設值
+		if clientConfig.Host == "" {
+			clientConfig.Host = defaultHost
+		}
+		return
+	}
+	defer _file.Close()
+
+	decoder := json.NewDecoder(_file)
+	err = decoder.Decode(&clientConfig)
+	if err != nil {
+		fmt.Printf("Error decoding config.json: %v\n", err)
+	}
+
+	// 設定預設值
+	if clientConfig.Host == "" {
+		clientConfig.Host = defaultHost
+	}
+}
+
+// -------------------------
+// getAssignedID 向伺服器請求分配的連線 ID
+func getAssignedID(localHWID string) string {
+	_apiKey := clientConfig.ApiKey
+	if _apiKey == "" {
+		_apiKey = os.Getenv("NETPASS_KEY") // 仍保留環境變數作為備援
+	}
+
+	_url := fmt.Sprintf("%s/api/getID", strings.TrimSuffix(clientConfig.Host, "/"))
+
+	// 準備 POST Form 資料
+	_formData := strings.NewReader(fmt.Sprintf("hwid=%s&key=%s", localHWID, _apiKey))
+
+	_client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	_resp, err := _client.Post(_url, "application/x-www-form-urlencoded", _formData)
+	if err != nil {
+		fmt.Printf("Failed to get assigned ID from server: %v. Using local HWID.\n", err)
+		return localHWID
+	}
+	defer _resp.Body.Close()
+
+	if _resp.StatusCode != http.StatusOK {
+		fmt.Printf("Server returned error when assigning ID (%d). Using local HWID.\n", _resp.StatusCode)
+		return localHWID
+	}
+
+	_body, err := io.ReadAll(_resp.Body)
+	if err != nil {
+		fmt.Printf("Failed to read assigned ID: %v\n", err)
+		return localHWID
+	}
+
+	_assignedID := strings.TrimSpace(string(_body))
+	if _assignedID == "" {
+		fmt.Println("Server returned empty ID. Using local HWID.")
+		return localHWID
+	}
+
+	return _assignedID
+}
+
+// -------------------------
+// handleTunnel 建立與伺服器的 WSS 隧道並對接本地服務 (WebSocket 訊息中轉模式)
+func handleTunnel(payload HttpRequestPayload) {
+	// 1. 解析目標伺服器位址 (從 clientConfig.Host 提取 domain)
+	_domain := clientConfig.Host
+	_domain = strings.TrimPrefix(_domain, "https://")
+	_domain = strings.TrimPrefix(_domain, "http://")
+	
+	// 如果帶有路徑，先去掉路徑
+	if _idx := strings.Index(_domain, "/"); _idx != -1 {
+		_domain = _domain[:_idx]
+	}
+	
+	// 分離 Host 與 Port，只取 Host
+	_hostOnly := _domain
+	if _idx := strings.Index(_domain, ":"); _idx != -1 {
+		_hostOnly = _domain[:_idx]
+	}
+
+	// 2. 直接使用傳來的 Port 與 Path
+	_port := payload.TargetPort
+	_targetPath := payload.URL
+
+	// 3. 連線到伺服器的 WSS 隧道埠 (18884)
+	// 這裡必須使用 _hostOnly 避免出現 test.com:8080:18884 的錯誤
+	_tunnelURL := fmt.Sprintf("wss://%s:18884/tunnel?token=%s", _hostOnly, payload.Token)
+	_dialer := websocket.Dialer{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	_wsTunnel, _, err := _dialer.Dial(_tunnelURL, nil)
+	if err != nil {
+		fmt.Printf("[Tunnel] Connection failed: %v\n", err)
+		return
+	}
+	defer _wsTunnel.Close()
+
+	// 4. 連線到本地 OpenClaw (WS)
+	_localURL := fmt.Sprintf("ws://localhost:%s%s", _port, _targetPath)
+	fmt.Printf("[Local] Connecting to %s\n", _localURL)
+
+	_header := make(http.Header)
+	for k, v := range payload.Header {
+		_kl := strings.ToLower(k)
+		if _kl == "upgrade" || _kl == "connection" || strings.HasPrefix(_kl, "sec-websocket-") || _kl == "host" {
+			continue
+		}
+		_header[k] = v
+	}
+	
+	// 強制覆蓋 Origin 為本地，避免被 OpenClaw 拒絕
+	_header.Set("Origin", fmt.Sprintf("http://localhost:%s", _port))
+
+	_wsLocal, _resp, err := _dialer.Dial(_localURL, _header)
+	
+	// 如果 WS 失敗，嘗試 WSS
+	// 邏輯與 HTTP 失敗改 HTTPS 完全一致
+	_isWSSOnly := false
+	if err != nil {
+		_errStr := err.Error()
+		if strings.Contains(_errStr, "EOF") || 
+		   strings.Contains(_errStr, "connection refused") || 
+		   strings.Contains(_errStr, "malformed HTTP response") || 
+		   strings.Contains(_errStr, "unexpected EOF") {
+			_isWSSOnly = true
+		}
+	}
+
+	if _isWSSOnly {
+		_localURL = fmt.Sprintf("wss://localhost:%s%s", _port, _targetPath)
+		fmt.Printf("[Local] Fallback connecting to %s\n", _localURL)
+		_header.Set("Origin", fmt.Sprintf("https://localhost:%s", _port))
+		_wsLocal, _resp, err = _dialer.Dial(_localURL, _header)
+	}
+
+	if err != nil {
+		if _resp != nil {
+			_body, _ := io.ReadAll(_resp.Body)
+			fmt.Printf("[Local] Connection failed: %v, Status: %d, Body: %s\n", err, _resp.StatusCode, string(_body))
+		} else {
+			fmt.Printf("[Local] Connection failed: %v\n", err)
+		}
+		return
+	}
+	defer _wsLocal.Close()
+	fmt.Printf("[Local] Connected successfully to %s\n", _localURL)
+
+	// 5. 雙向中轉 WebSocket 訊息
+	_errChan := make(chan error, 2)
+
+	// Local -> Tunnel
+	go func() {
+		for {
+			mt, data, err := _wsLocal.ReadMessage()
+			if err != nil {
+				_errChan <- err
+				return
+			}
+			err = _wsTunnel.WriteMessage(mt, data)
+			if err != nil {
+				_errChan <- err
+				return
+			}
+		}
+	}()
+
+	// Tunnel -> Local
+	go func() {
+		for {
+			mt, data, err := _wsTunnel.ReadMessage()
+			if err != nil {
+				_errChan <- err
+				return
+			}
+			err = _wsLocal.WriteMessage(mt, data)
+			if err != nil {
+				_errChan <- err
+				return
+			}
+		}
+	}()
+
+	<-_errChan
+}
+
+// wsNetConn 將 websocket.Conn 包裝成 net.Conn 的轉接器
+type wsNetConn struct {
+	Conn   *websocket.Conn
+	reader io.Reader
+}
+
+func (c *wsNetConn) Read(b []byte) (n int, err error) {
+	if c.reader == nil {
+		_, c.reader, err = c.Conn.NextReader()
+		if err != nil {
+			return 0, err
+		}
+	}
+	for {
+		n, err = c.reader.Read(b)
+		if err == io.EOF {
+			c.reader = nil
+			if n > 0 {
+				return n, nil
+			}
+			_, c.reader, err = c.Conn.NextReader()
+			if err != nil {
+				return 0, err
+			}
+			continue
+		}
+		return n, err
+	}
+}
+
+func (c *wsNetConn) Write(b []byte) (n int, err error) {
+	err = c.Conn.WriteMessage(websocket.BinaryMessage, b)
+	if err != nil {
+		return 0, err
+	}
+	return len(b), nil
+}
+
+func (c *wsNetConn) Close() error {
+	return c.Conn.Close()
+}
+
+func (c *wsNetConn) LocalAddr() net.Addr                { return c.Conn.LocalAddr() }
+func (c *wsNetConn) RemoteAddr() net.Addr               { return c.Conn.RemoteAddr() }
+func (c *wsNetConn) SetDeadline(t time.Time) error      { return nil }
+func (c *wsNetConn) SetReadDeadline(t time.Time) error  { return c.Conn.SetReadDeadline(t) }
+func (c *wsNetConn) SetWriteDeadline(t time.Time) error { return c.Conn.SetWriteDeadline(t) }
+
+// -------------------------
+// killExistingInstances 搜尋並終止其他正在運作的 NetPassClient 進程
+func killExistingInstances() {
+	currentPid := os.Getpid()
+	
+	// 使用 pgrep 搜尋包含 "NetPassClient" 的進程 ID
+	// -f: 搜尋完整命令行
+	out, err := exec.Command("pgrep", "-f", "NetPassClient").Output()
+	if err != nil {
+		return // 通常代表沒找到
+	}
+
+	pids := strings.Fields(string(out))
+	for _, pidStr := range pids {
+		pid, err := strconv.Atoi(pidStr)
+		if err != nil {
+			continue
+		}
+
+		// 排除目前進程
+		if pid == currentPid {
+			continue
+		}
+
+		// 取得進程並嘗試終止
+		process, err := os.FindProcess(pid)
+		if err == nil {
+			fmt.Printf("Detected another NetPassClient (PID: %d). Killing it...\n", pid)
+			process.Signal(syscall.SIGKILL)
+			// 給予一點時間釋放資源
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
 }
 
 // -------------------------
 func main() {
-	hwID = getHardwareID()
-	var clientId = fmt.Sprintf("%s", hwID)
+	// 啟動前先清理其他進程
+	killExistingInstances()
 
-	if clientId == "" {
-		fmt.Println("Failed to generate hardware ID. Exiting...")
+	// 載入設定檔
+	loadConfig()
+
+	// 啟動時檢查更新
+	if clientConfig.AutoUpdate {
+		checkUpdate()
+	}
+
+	_localHWID := getHardwareID()
+	if _localHWID == "" {
+		fmt.Println("Failed to generate local hardware ID. Exiting...")
 		return
 	}
 
-	fmt.Printf("NetPassClient starting with ID: %s\n", clientId)
+	// 向伺服器領取分配的 ID (可能是固定的或隨日期變動的)
+	hwID = getAssignedID(_localHWID)
+	var clientId = fmt.Sprintf("%s", hwID)
+
+	fmt.Printf("NetPassClient starting with Assigned ID: %s\n", hwID)
+
+	// 解析 Host 取得網域名稱以用於 MQTT (預設 18883)
+	_domain := clientConfig.Host
+	_domain = strings.TrimPrefix(_domain, "https://")
+	_domain = strings.TrimPrefix(_domain, "http://")
+	
+	// 只取 Host 部分，過濾掉 Port 與 Path
+	if _idx := strings.Index(_domain, ":"); _idx != -1 {
+		_domain = _domain[:_idx]
+	}
+	if _idx := strings.Index(_domain, "/"); _idx != -1 {
+		_domain = _domain[:_idx]
+	}
+
+	_broker := fmt.Sprintf("ssl://%s:18883", _domain)
+	fmt.Printf("Connecting to Tunnel: %s\n", _broker)
 
 	opts := mqtt.NewClientOptions()
-	opts.AddBroker("ssl://netpass.mars-cloud.com:18883")
+	opts.AddBroker(_broker)
 	opts.SetClientID(clientId)
 	opts.SetDefaultPublishHandler(messagePubHandler)
 	opts.OnConnect = connectHandler
 	opts.OnConnectionLost = connectLostHandler
 
 	opts.SetTLSConfig(&tls.Config{
-		InsecureSkipVerify: false,
+		InsecureSkipVerify: true,
 	})
 
 	opts.SetAutoReconnect(true)
 	opts.SetConnectRetry(true)
 	opts.SetConnectRetryInterval(5 * time.Second)
+	opts.SetMaxReconnectInterval(30 * time.Second)
+
+	// 設定連線中斷與重連的回呼
+	opts.OnReconnecting = func(client mqtt.Client, options *mqtt.ClientOptions) {
+		fmt.Println("Attempting to reconnect to NetPass Tunnel...")
+	}
 
 	client := mqtt.NewClient(opts)
 	if token := client.Connect(); token.Wait() && token.Error() != nil {
