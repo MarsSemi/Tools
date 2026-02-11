@@ -10,7 +10,7 @@
 ## 配置說明 (`config.json`)
 ```json
 {
-  "api_key": "your_key",
+  "api_key": "your_key(可空白)",
   "host": "https://netpass.mars-cloud.com"
 }
 ```
@@ -27,9 +27,15 @@
 
 ## 範例
 如果你在 local 執行了一個 Http Service，
-有個 Restful API 是 http://127.0.0.1:8080/api/hello
-正確執行本程式後會配置一組 ID，該 Restful api 會連通以下網址：
+有個 Restful API 是
+```
+http://127.0.0.1:8080/api/hello
+```
 
-# https://netpass.mars-cloud.com/pass/[id]/8080/hello
+正確執行本程式後會配置一組 ID，該 Restful api 則會映射成以下網址：
+
+```
+https://netpass.mars-cloud.com/pass/[id]/8080/hello
+```
 
 其餘透傳功能依此類推。
