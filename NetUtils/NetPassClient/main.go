@@ -8,29 +8,34 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
-	"os/signal"
 	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/gorilla/websocket"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/gorilla/websocket"
 )
 
 // -------------------------
+const defaultAppName = "NetPass Client"
 const defaultHost = "https://netpass.mars-cloud.com"
 
 // -------------------------
 // hwID 儲存本機硬體唯一識別碼 (12位元)
 var hwID string
+
+//var sysTray *SysTray
+
+// -------------------------
 
 // -------------------------
 // HttpRequestPayload 定義了從 Broker 接收到的 MQTT 請求資料結構
@@ -126,7 +131,7 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
 			req.Header.Add(k, v)
 		}
 	}
-	
+
 	// 強制設定 Host 為 localhost，避免被 Web Server 拒絕
 	req.Host = "localhost"
 
@@ -147,10 +152,10 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
 	_isHTTPSOnly := false
 	if err != nil {
 		_errStr := err.Error()
-		if strings.Contains(_errStr, "EOF") || 
-		   strings.Contains(_errStr, "connection refused") || 
-		   strings.Contains(_errStr, "http: server gave HTTP response to HTTPS client") || 
-		   strings.Contains(_errStr, "malformed HTTP response") {
+		if strings.Contains(_errStr, "EOF") ||
+			strings.Contains(_errStr, "connection refused") ||
+			strings.Contains(_errStr, "http: server gave HTTP response to HTTPS client") ||
+			strings.Contains(_errStr, "malformed HTTP response") {
 			_isHTTPSOnly = true
 		}
 	}
@@ -158,15 +163,19 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
 	if _isHTTPSOnly {
 		localURL = fmt.Sprintf("https://localhost:%s%s", port, targetPath)
 		req, _ = http.NewRequest(payload.Method, localURL, bytes.NewBufferString(payload.Body))
-		
+
 		// 重新設定清洗後的 Header
 		for k, vv := range payload.Header {
 			_kl := strings.ToLower(k)
-			if _kl == "host" { continue }
-			for _, v := range vv { req.Header.Add(k, v) }
+			if _kl == "host" {
+				continue
+			}
+			for _, v := range vv {
+				req.Header.Add(k, v)
+			}
 		}
 		req.Host = "localhost"
-		
+
 		resp, err = httpClient.Do(req)
 	}
 
@@ -248,9 +257,11 @@ var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
 				fmt.Printf("Subscribe failed: %v\n", token.Error())
 			} else {
 				fmt.Printf("Subscribed to topic: %s\n", topic)
+				//sysTray.SetStatus("Connected")
 			}
 		} else {
 			fmt.Println("Subscribe timed out. Will retry automatically by library or next connect.")
+			//sysTray.SetStatus("Create tunnel FAIL")
 		}
 	}()
 }
@@ -258,6 +269,7 @@ var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
 // -------------------------
 var connectLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err error) {
 	fmt.Printf("Connect lost: %v. Waiting for auto-reconnect...\n", err)
+	//sysTray.SetStatus("Disconnect")
 }
 
 // -------------------------
@@ -435,12 +447,12 @@ func handleTunnel(payload HttpRequestPayload) {
 	_domain := clientConfig.Host
 	_domain = strings.TrimPrefix(_domain, "https://")
 	_domain = strings.TrimPrefix(_domain, "http://")
-	
+
 	// 如果帶有路徑，先去掉路徑
 	if _idx := strings.Index(_domain, "/"); _idx != -1 {
 		_domain = _domain[:_idx]
 	}
-	
+
 	// 分離 Host 與 Port，只取 Host
 	_hostOnly := _domain
 	if _idx := strings.Index(_domain, ":"); _idx != -1 {
@@ -476,21 +488,21 @@ func handleTunnel(payload HttpRequestPayload) {
 		}
 		_header[k] = v
 	}
-	
+
 	// 強制覆蓋 Origin 為本地，避免被 OpenClaw 拒絕
 	_header.Set("Origin", fmt.Sprintf("http://localhost:%s", _port))
 
 	_wsLocal, _resp, err := _dialer.Dial(_localURL, _header)
-	
+
 	// 如果 WS 失敗，嘗試 WSS
 	// 邏輯與 HTTP 失敗改 HTTPS 完全一致
 	_isWSSOnly := false
 	if err != nil {
 		_errStr := err.Error()
-		if strings.Contains(_errStr, "EOF") || 
-		   strings.Contains(_errStr, "connection refused") || 
-		   strings.Contains(_errStr, "malformed HTTP response") || 
-		   strings.Contains(_errStr, "unexpected EOF") {
+		if strings.Contains(_errStr, "EOF") ||
+			strings.Contains(_errStr, "connection refused") ||
+			strings.Contains(_errStr, "malformed HTTP response") ||
+			strings.Contains(_errStr, "unexpected EOF") {
 			_isWSSOnly = true
 		}
 	}
@@ -552,12 +564,14 @@ func handleTunnel(payload HttpRequestPayload) {
 	<-_errChan
 }
 
+// -------------------------
 // wsNetConn 將 websocket.Conn 包裝成 net.Conn 的轉接器
 type wsNetConn struct {
 	Conn   *websocket.Conn
 	reader io.Reader
 }
 
+// -------------------------
 func (c *wsNetConn) Read(b []byte) (n int, err error) {
 	if c.reader == nil {
 		_, c.reader, err = c.Conn.NextReader()
@@ -582,6 +596,7 @@ func (c *wsNetConn) Read(b []byte) (n int, err error) {
 	}
 }
 
+// -------------------------
 func (c *wsNetConn) Write(b []byte) (n int, err error) {
 	err = c.Conn.WriteMessage(websocket.BinaryMessage, b)
 	if err != nil {
@@ -590,10 +605,12 @@ func (c *wsNetConn) Write(b []byte) (n int, err error) {
 	return len(b), nil
 }
 
+// -------------------------
 func (c *wsNetConn) Close() error {
 	return c.Conn.Close()
 }
 
+// -------------------------
 func (c *wsNetConn) LocalAddr() net.Addr                { return c.Conn.LocalAddr() }
 func (c *wsNetConn) RemoteAddr() net.Addr               { return c.Conn.RemoteAddr() }
 func (c *wsNetConn) SetDeadline(t time.Time) error      { return nil }
@@ -604,7 +621,7 @@ func (c *wsNetConn) SetWriteDeadline(t time.Time) error { return c.Conn.SetWrite
 // killExistingInstances 搜尋並終止其他正在運作的 NetPassClient 進程
 func killExistingInstances() {
 	currentPid := os.Getpid()
-	
+
 	// 使用 pgrep 搜尋包含 "NetPassClient" 的進程 ID
 	// -f: 搜尋完整命令行
 	out, err := exec.Command("pgrep", "-f", "NetPassClient").Output()
@@ -636,17 +653,7 @@ func killExistingInstances() {
 }
 
 // -------------------------
-func main() {
-	// 啟動前先清理其他進程
-	killExistingInstances()
-
-	// 載入設定檔
-	loadConfig()
-
-	// 啟動時檢查更新
-	if clientConfig.AutoUpdate {
-		checkUpdate()
-	}
+func createTunnel() {
 
 	_localHWID := getHardwareID()
 	if _localHWID == "" {
@@ -659,12 +666,14 @@ func main() {
 	var clientId = fmt.Sprintf("%s", hwID)
 
 	fmt.Printf("NetPassClient starting with Assigned ID: %s\n", hwID)
+	//sysTray.SetHwID(hwID)
+	//sysTray.SetStatus("Connecting")
 
 	// 解析 Host 取得網域名稱以用於 MQTT (預設 18883)
 	_domain := clientConfig.Host
 	_domain = strings.TrimPrefix(_domain, "https://")
 	_domain = strings.TrimPrefix(_domain, "http://")
-	
+
 	// 只取 Host 部分，過濾掉 Port 與 Path
 	if _idx := strings.Index(_domain, ":"); _idx != -1 {
 		_domain = _domain[:_idx]
@@ -702,12 +711,58 @@ func main() {
 		fmt.Printf("Initial connection failed: %v. Retrying in background...\n", token.Error())
 	}
 
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	<-sigs
+	//sysTray.SetStatus("Connected")
+}
 
-	client.Disconnect(250)
-	fmt.Println("Client disconnected.")
+// -------------------------
+func checkDaemon() {
+
+	isDaemon := flag.Bool("d", false, "run in background")
+	flag.Parse()
+
+	// 2. 如果不是在背景模式，且不是 Windows (Windows 建議用編譯參數)
+	if !*isDaemon && runtime.GOOS != "windows" {
+		args := append(os.Args[1:], "-d")
+		cmd := exec.Command(os.Args[0], args...)
+
+		// 關鍵：將子進程與目前的 Console 脫離
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+		cmd.Stdin = nil
+
+		err := cmd.Start()
+		if err != nil {
+			fmt.Printf("Cannot run as Daemon : %v\n", err)
+		} else {
+
+			fmt.Printf("NetPass run as Daemon. (PID: %d)\n", cmd.Process.Pid)
+			time.Sleep(1 * time.Second)
+			os.Exit(0) // 結束父進程，釋放 Console
+		}
+	}
+}
+
+// -------------------------
+func main() {
+
+	// 啟動前先清理其他進程
+	killExistingInstances()
+
+	// 載入設定檔
+	loadConfig()
+
+	// 啟動時檢查更新
+	if clientConfig.AutoUpdate {
+		checkUpdate()
+	}
+
+	go func() {
+		checkDaemon()
+		createTunnel()
+	}()
+
+	//sysTray := NewSysTray(clientConfig.Host)
+	//sysTray.Start()
 }
 
 //-------------------------
