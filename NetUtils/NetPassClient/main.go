@@ -761,6 +761,7 @@ func main() {
 		createTunnel()
 	}()
 
+	select {}
 	//sysTray := NewSysTray(clientConfig.Host)
 	//sysTray.Start()
 }
