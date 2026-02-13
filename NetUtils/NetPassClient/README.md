@@ -18,3 +18,17 @@
 ## 運行建議
 開發環境直接使用 `go run .` 執行，若需常駐請搭配系統服務管理。
 目前 Assigned ID 會在啟動時印出，或從 `client.log` 中查看。
+如執行或編譯遇到下列錯誤：
+
+```
+fatal error: X11/extensions/Xrandr.h: No such file or directory
+
+```
+這是典型的 golang CGO (C bindings) 問題，請更新相關的lib後，
+再次執行或編譯
+
+```
+sudo apt-get update
+sudo apt-get install libxrandr-dev libxcursor-dev libxinerama-dev libxi-dev libgl1-mesa-dev
+
+```

@@ -26,14 +26,23 @@ import (
 )
 
 // -------------------------
-const defaultAppName = "NetPass Client"
+func init() {
+	// 如果檢測到語係是 C，則強制改為 en-US 以避免 Fyne 報錯
+	fmt.Print("Check Env Lang\n")
+	if os.Getenv("LANG") == "C" || os.Getenv("LANG") == "" {
+		os.Setenv("LANG", "en-US.UTF-8")
+	}
+}
+
+// -------------------------
+const defaultAppName = "NetPassClient"
 const defaultHost = "https://netpass.mars-cloud.com"
 
 // -------------------------
 type GlobalData struct {
 	hwID   string
 	config Config
-	//ui     *GUI
+	ui     *GUI
 }
 
 // -------------------------
@@ -369,6 +378,7 @@ type Config struct {
 // -------------------------
 // loadConfig 從 config.json 載入設定
 func loadConfig() {
+
 	_file, err := os.Open("config.json")
 	if err != nil {
 		// 設定預設值
@@ -733,7 +743,7 @@ func checkDaemon() {
 			fmt.Printf("Cannot run as Daemon : %v\n", err)
 		} else {
 
-			fmt.Printf("NetPass run as Daemon : %d\n", cmd.Process.Pid)
+			fmt.Printf("NetPassClient run as Daemon : %d\n", cmd.Process.Pid)
 			time.Sleep(1 * time.Second)
 			os.Exit(0) // 結束父進程，釋放 Console
 		}
@@ -759,9 +769,13 @@ func main() {
 		createTunnel()
 	}()
 
-	select {}
-	//Global.ui = createGUI()
-	//Global.ui.Run()
+	Global.ui = createGUI()
+
+	if Global.ui != nil {
+		Global.ui.Run()
+	} else {
+		select {}
+	}
 }
 
 //-------------------------

@@ -1,5 +1,5 @@
 #!/bin/bash
-
+go mod tidy
 # 設定輸出的二進位檔名稱
 APP_NAME="NetPassClient"
 OUTPUT_DIR="./bin"
