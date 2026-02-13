@@ -30,6 +30,6 @@ fatal error: X11/extensions/Xrandr.h: No such file or directory
 ```
 sudo apt-get update
 sudo apt-get install libxrandr-dev libxcursor-dev libxinerama-dev libxi-dev libgl1-mesa-dev
-sudo apt-get install libgl1-mesa-dev xorg-dev libxxf86vm-dev libasound2-dev libx11-dev libxcursor-dev libxinerama-dev libxrandr-dev libxi-dev
+sudo apt-get install xorg-dev libxxf86vm-dev libasound2-dev libx11-dev libxcursor-dev libxinerama-dev
 
 ```
