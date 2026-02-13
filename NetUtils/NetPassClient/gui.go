@@ -114,12 +114,14 @@ func (_this *GUI) ShowAbout() {
 	_u, _err := url.Parse("https://github.com/MarsSemi/Tools/tree/main/NetUtils/NetPassClient")
 	_githubLink := widget.NewHyperlink("NetPassClient GitHub", _u)
 	_since := widget.NewLabel("© since 2026 Mars Cloud")
+	_version := widget.NewLabel(defaultVersion)
 
 	if _err != nil {
 	}
 
 	_githubLink.Alignment = fyne.TextAlignCenter
 	_since.Alignment = fyne.TextAlignCenter
+	_version.Alignment = fyne.TextAlignCenter
 	_info := "Upon execution, this program will configure a public network tunnel,\nconnectivity between local services and the external network."
 
 	_content := container.NewVBox(
@@ -130,6 +132,7 @@ func (_this *GUI) ShowAbout() {
 		_githubLink,
 		widget.NewLabel(""),
 		widget.NewSeparator(),
+		_version,
 		_since,
 	)
 
@@ -141,13 +144,16 @@ func (_this *GUI) ShowAbout() {
 // -------------------------
 func (_this *GUI) ShowInfo() {
 
-	_info := "Now, you can access your local http service or websocket service.\n\nHttps link : \n%s\n\nWSS link :\n%s\n\n"
+	_info := "web : \n%s\n\nwss :\n%s\n\n"
 	_url := Global.config.Host + "/pass/" + Global.hwID + "/{local_port}"
 	_wss := strings.Replace(_url, "https", "wss", 1)
 
 	_content := container.NewVBox(
-		widget.NewLabel("Pass-Through URL"),
 		widget.NewLabel("Allcated ID : "+Global.hwID),
+		widget.NewSeparator(),
+		widget.NewLabel("Now, you can access your Local Net Service."),
+		widget.NewSeparator(),
+		widget.NewLabel("Pass-Through URL"),
 		widget.NewLabel(fmt.Sprintf(_info, _url, _wss)),
 	)
 
