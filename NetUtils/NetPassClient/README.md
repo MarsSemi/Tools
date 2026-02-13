@@ -21,15 +21,26 @@
 如執行或編譯遇到下列錯誤：
 
 ```
-fatal error: X11/extensions/Xrandr.h: No such file or directory
+# runtime/cgo
+gcc: error: unrecognized command-line option '-m64'
+
+或是
+
+cgo: C compiler "x86_64-w64-mingw32-gcc" not found: exec: "x86_64-w64-mingw32-gcc": executable file not found in $PATH
+
+這是因為缺少 MinGW 編譯器，請安裝：
+
+sudo apt-get update
+sudo apt-get install gcc-mingw-w64
+```
 
 ```
+fatal error: X11/extensions/Xrandr.h: No such file or directory
+
 這是典型的 golang CGO (C bindings) 問題，請更新相關的lib後，
 再次執行或編譯
 
-```
 sudo apt-get update
 sudo apt-get install libxrandr-dev libxcursor-dev libxinerama-dev libxi-dev libgl1-mesa-dev
 sudo apt-get install xorg-dev libxxf86vm-dev libasound2-dev libx11-dev libxcursor-dev libxinerama-dev
-
 ```

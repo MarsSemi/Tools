@@ -1,11 +1,16 @@
+//go:build windows || darwin
+// +build windows darwin
+
 package main
 
 // -------------------------
 import (
+	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 
 	_ "embed"
 
@@ -71,11 +76,11 @@ func createGUI() *GUI {
 
 			_resIcon := fyne.NewStaticResource("./icon.png", iconData)
 			_menu := fyne.NewMenu("MainMenu",
-				//fyne.NewMenuItem("顯示主視窗", func() {
-				//	_gui.ShowInfo()
-				//}),
+				fyne.NewMenuItem("System Info", func() {
+					_gui.ShowInfo()
+				}),
 				fyne.NewMenuItemSeparator(), // 分隔線
-				fyne.NewMenuItem("關於", func() {
+				fyne.NewMenuItem("About", func() {
 					_gui.ShowAbout()
 				}),
 			)
@@ -136,8 +141,14 @@ func (_this *GUI) ShowAbout() {
 // -------------------------
 func (_this *GUI) ShowInfo() {
 
+	_info := "Now, you can access your local http service or websocket service.\n\nHttps link : \n%s\n\nWSS link :\n%s\n\n"
+	_url := Global.config.Host + "/pass/" + Global.hwID + "/{local_port}"
+	_wss := strings.Replace(_url, "https", "wss", 1)
+
 	_content := container.NewVBox(
-		widget.NewLabel("主程式"),
+		widget.NewLabel("Pass-Through URL"),
+		widget.NewLabel("Allcated ID : "+Global.hwID),
+		widget.NewLabel(fmt.Sprintf(_info, _url, _wss)),
 	)
 
 	_this.window.SetContent(_content)

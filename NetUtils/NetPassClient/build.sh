@@ -32,12 +32,28 @@ for PLATFORM in "${PLATFORMS[@]}"; do
     if [ "$ARCH" == "amd64" ]; then
         FILENAME_ARCH="x64"
     fi
+
+    # 根據平台設定編譯環境
+    if [ "$OS" == "linux" ]; then
+        export CGO_ENABLED=0
+        unset CC
+    elif [ "$OS" == "windows" ]; then
+        export CGO_ENABLED=1
+        export CC=x86_64-w64-mingw32-gcc
+    elif [ "$OS" == "darwin" ]; then
+        export CGO_ENABLED=1
+        unset CC
+    fi
     
     OUTPUT_NAME="${APP_NAME}_${OS}_${FILENAME_ARCH}${EXT}"
     echo "正在編譯: $OS/$ARCH -> $OUTPUT_DIR/$OUTPUT_NAME"
     
-    # 執行編譯
-    env GOOS=$OS GOARCH=$ARCH $GO_BIN build -o "$OUTPUT_DIR/$OUTPUT_NAME" .
+    # 執行編譯 (加上 -ldflags 以隱藏 Windows 的命令提示字元視窗)
+    if [ "$OS" == "windows" ]; then
+        env GOOS=$OS GOARCH=$ARCH go build -ldflags="-H windowsgui" -o "$OUTPUT_DIR/$OUTPUT_NAME" .
+    else
+        env GOOS=$OS GOARCH=$ARCH go build -o "$OUTPUT_DIR/$OUTPUT_NAME" .
+    fi
     
     if [ $? -eq 0 ]; then
         echo "✅ $OS/$ARCH 編譯成功"

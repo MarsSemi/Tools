@@ -1,3 +1,3 @@
-#go clean -modcache
+go clean -modcache
 go mod tidy
 go run .
