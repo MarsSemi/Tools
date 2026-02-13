@@ -30,12 +30,14 @@ const defaultAppName = "NetPass Client"
 const defaultHost = "https://netpass.mars-cloud.com"
 
 // -------------------------
-// hwID 儲存本機硬體唯一識別碼 (12位元)
-var hwID string
-
-//var sysTray *SysTray
+type GlobalData struct {
+	hwID   string
+	config Config
+	//ui     *GUI
+}
 
 // -------------------------
+var Global GlobalData
 
 // -------------------------
 // HttpRequestPayload 定義了從 Broker 接收到的 MQTT 請求資料結構
@@ -181,7 +183,7 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
 
 	// 準備回傳資料
 	var responsePayload HttpResponsePayload
-	responsePayload.HardwareID = hwID
+	responsePayload.HardwareID = Global.hwID
 	responsePayload.RequestURL = localURL
 	responsePayload.SessionID = payload.SessionID // 關鍵：帶回 session_id 供伺服器配對
 
@@ -224,7 +226,7 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
 	}
 
 	// 4. 將執行結果發布回 MQTT (使用 http/response 前綴)
-	responseTopic := fmt.Sprintf("http/response/%s", hwID)
+	responseTopic := fmt.Sprintf("http/response/%s", Global.hwID)
 	jsonResp, err := json.Marshal(responsePayload)
 	if err != nil {
 		fmt.Printf("Failed to marshal response: %v\n", err)
@@ -242,11 +244,11 @@ var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
 	fmt.Println("Connected to NetPass Tunnel")
 
 	// 顯示公網存取網址
-	_host := strings.TrimSuffix(clientConfig.Host, "/")
-	fmt.Printf("Public access URL: %s/pass/%s/\n", _host, hwID)
+	_host := strings.TrimSuffix(Global.config.Host, "/")
+	fmt.Printf("Public access URL: %s/pass/%s/\n", _host, Global.hwID)
 
 	// 訂閱專屬於此硬體 ID 的請求主題 (配合 MarsCloud 規則)
-	topic := fmt.Sprintf("http/request/%s", hwID)
+	topic := fmt.Sprintf("http/request/%s", Global.hwID)
 	fmt.Printf("Subscribing to topic: %s...\n", topic)
 
 	// 使用非同步方式訂閱，並設定超時，避免卡死連線執行緒
@@ -290,7 +292,7 @@ func checkUpdate() {
 	_os := runtime.GOOS
 	_arch := runtime.GOARCH
 
-	_updateURL := fmt.Sprintf("%s/update/%s/%s", strings.TrimSuffix(clientConfig.Host, "/"), _os, _arch)
+	_updateURL := fmt.Sprintf("%s/update/%s/%s", strings.TrimSuffix(Global.config.Host, "/"), _os, _arch)
 
 	_client := &http.Client{
 		Timeout: 30 * time.Second,
@@ -365,43 +367,39 @@ type Config struct {
 }
 
 // -------------------------
-
-var clientConfig Config
-
-// -------------------------
 // loadConfig 從 config.json 載入設定
 func loadConfig() {
 	_file, err := os.Open("config.json")
 	if err != nil {
 		// 設定預設值
-		if clientConfig.Host == "" {
-			clientConfig.Host = defaultHost
+		if Global.config.Host == "" {
+			Global.config.Host = defaultHost
 		}
 		return
 	}
 	defer _file.Close()
 
 	decoder := json.NewDecoder(_file)
-	err = decoder.Decode(&clientConfig)
+	err = decoder.Decode(&Global.config)
 	if err != nil {
 		fmt.Printf("Error decoding config.json: %v\n", err)
 	}
 
 	// 設定預設值
-	if clientConfig.Host == "" {
-		clientConfig.Host = defaultHost
+	if Global.config.Host == "" {
+		Global.config.Host = defaultHost
 	}
 }
 
 // -------------------------
 // getAssignedID 向伺服器請求分配的連線 ID
 func getAssignedID(localHWID string) string {
-	_apiKey := clientConfig.ApiKey
+	_apiKey := Global.config.ApiKey
 	if _apiKey == "" {
 		_apiKey = os.Getenv("NETPASS_KEY") // 仍保留環境變數作為備援
 	}
 
-	_url := fmt.Sprintf("%s/api/getID", strings.TrimSuffix(clientConfig.Host, "/"))
+	_url := fmt.Sprintf("%s/api/getID", strings.TrimSuffix(Global.config.Host, "/"))
 
 	// 準備 POST Form 資料
 	_formData := strings.NewReader(fmt.Sprintf("hwid=%s&key=%s", localHWID, _apiKey))
@@ -443,8 +441,8 @@ func getAssignedID(localHWID string) string {
 // -------------------------
 // handleTunnel 建立與伺服器的 WSS 隧道並對接本地服務 (WebSocket 訊息中轉模式)
 func handleTunnel(payload HttpRequestPayload) {
-	// 1. 解析目標伺服器位址 (從 clientConfig.Host 提取 domain)
-	_domain := clientConfig.Host
+	// 1. 解析目標伺服器位址 (從 config.Host 提取 domain)
+	_domain := Global.config.Host
 	_domain = strings.TrimPrefix(_domain, "https://")
 	_domain = strings.TrimPrefix(_domain, "http://")
 
@@ -662,15 +660,15 @@ func createTunnel() {
 	}
 
 	// 向伺服器領取分配的 ID (可能是固定的或隨日期變動的)
-	hwID = getAssignedID(_localHWID)
-	var clientId = fmt.Sprintf("%s", hwID)
+	Global.hwID = getAssignedID(_localHWID)
+	var clientId = fmt.Sprintf("%s", Global.hwID)
 
-	fmt.Printf("NetPassClient starting with Assigned ID: %s\n", hwID)
+	fmt.Printf("NetPassClient starting with Assigned ID: %s\n", Global.hwID)
 	//sysTray.SetHwID(hwID)
 	//sysTray.SetStatus("Connecting")
 
 	// 解析 Host 取得網域名稱以用於 MQTT (預設 18883)
-	_domain := clientConfig.Host
+	_domain := Global.config.Host
 	_domain = strings.TrimPrefix(_domain, "https://")
 	_domain = strings.TrimPrefix(_domain, "http://")
 
@@ -735,7 +733,7 @@ func checkDaemon() {
 			fmt.Printf("Cannot run as Daemon : %v\n", err)
 		} else {
 
-			fmt.Printf("NetPass run as Daemon. (PID: %d)\n", cmd.Process.Pid)
+			fmt.Printf("NetPass run as Daemon : %d\n", cmd.Process.Pid)
 			time.Sleep(1 * time.Second)
 			os.Exit(0) // 結束父進程，釋放 Console
 		}
@@ -752,7 +750,7 @@ func main() {
 	loadConfig()
 
 	// 啟動時檢查更新
-	if clientConfig.AutoUpdate {
+	if Global.config.AutoUpdate {
 		checkUpdate()
 	}
 
@@ -762,8 +760,8 @@ func main() {
 	}()
 
 	select {}
-	//sysTray := NewSysTray(clientConfig.Host)
-	//sysTray.Start()
+	//Global.ui = createGUI()
+	//Global.ui.Run()
 }
 
 //-------------------------
