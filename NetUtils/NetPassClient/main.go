@@ -35,6 +35,7 @@ func init() {
 }
 
 // -------------------------
+const defaultVersion = "Version 0.2.13"
 const defaultAppName = "NetPassClient"
 const defaultHost = "https://netpass.mars-cloud.com"
 
@@ -110,6 +111,12 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
 	// 處理隧道請求 (WebSocket)
 	if payload.Action == "tunnel" {
 		go handleTunnel(payload)
+		return
+	}
+
+	// 處理 TCP 隧道請求 (例如 SSH, RDP)
+	if payload.Action == "tcp_tunnel" {
+		go handleTCPTunnel(payload)
 		return
 	}
 
@@ -573,6 +580,92 @@ func handleTunnel(payload HttpRequestPayload) {
 }
 
 // -------------------------
+// handleTCPTunnel 建立與伺服器的 WSS 隧道並對接本地純 TCP 服務 (如 SSH port 22)
+func handleTCPTunnel(payload HttpRequestPayload) {
+	// 1. 解析目標伺服器位址 (從 config.Host 提取 domain)
+	_domain := Global.config.Host
+	_domain = strings.TrimPrefix(_domain, "https://")
+	_domain = strings.TrimPrefix(_domain, "http://")
+
+	if _idx := strings.Index(_domain, "/"); _idx != -1 {
+		_domain = _domain[:_idx]
+	}
+
+	_hostOnly := _domain
+	if _idx := strings.Index(_domain, ":"); _idx != -1 {
+		_hostOnly = _domain[:_idx]
+	}
+
+	// 2. 取出 Port (如 22)
+	_port := payload.TargetPort
+
+	// 3. 連線到伺服器的 WSS 隧道埠 (18884)
+	_tunnelURL := fmt.Sprintf("wss://%s:18884/tunnel?token=%s", _hostOnly, payload.Token)
+	_dialer := websocket.Dialer{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	_wsTunnel, _, err := _dialer.Dial(_tunnelURL, nil)
+	if err != nil {
+		fmt.Printf("[TCP Tunnel] Server connection failed: %v\n", err)
+		return
+	}
+	defer _wsTunnel.Close()
+	fmt.Printf("[TCP Tunnel] Connected successfully to Server WSS: %s\n", _tunnelURL)
+
+	// 4. 建立本地 TCP 連線
+	_localAddr := fmt.Sprintf("localhost:%s", _port)
+	_tcpLocal, err := net.Dial("tcp", _localAddr)
+	if err != nil {
+		fmt.Printf("[TCP Tunnel] Local connection failed: %v\n", err)
+		return
+	}
+	defer _tcpLocal.Close()
+	fmt.Printf("[TCP Tunnel] Connected successfully to Local TCP: %s\n", _localAddr)
+
+	// 5. 雙向中轉資料: WSS(Server) <-> TCP(Local)
+	_errChan := make(chan error, 2)
+
+	// Server (WSS) -> Local (TCP)
+	go func() {
+		for {
+			_, data, err := _wsTunnel.ReadMessage()
+			if err != nil {
+				_errChan <- err
+				return
+			}
+			_, err = _tcpLocal.Write(data)
+			if err != nil {
+				_errChan <- err
+				return
+			}
+		}
+	}()
+
+	// Local (TCP) -> Server (WSS)
+	go func() {
+		buffer := make([]byte, 32768) // 32KB buffer 通常足夠
+		for {
+			n, err := _tcpLocal.Read(buffer)
+			if err != nil {
+				if err != io.EOF && !strings.Contains(err.Error(), "use of closed network connection") {
+					fmt.Printf("[TCP Tunnel] Local read error: %v\n", err)
+				}
+				_errChan <- err
+				return
+			}
+			err = _wsTunnel.WriteMessage(websocket.BinaryMessage, buffer[:n])
+			if err != nil {
+				_errChan <- err
+				return
+			}
+		}
+	}()
+
+	<-_errChan
+	fmt.Printf("[TCP Tunnel] Session closed for Port %s\n", _port)
+}
+
+// -------------------------
 // wsNetConn 將 websocket.Conn 包裝成 net.Conn 的轉接器
 type wsNetConn struct {
 	Conn   *websocket.Conn
@@ -661,7 +754,7 @@ func killExistingInstances() {
 }
 
 // -------------------------
-func createTunnel() {
+func initHWID() {
 
 	_localHWID := getHardwareID()
 	if _localHWID == "" {
@@ -671,9 +764,21 @@ func createTunnel() {
 
 	// 向伺服器領取分配的 ID (可能是固定的或隨日期變動的)
 	Global.hwID = getAssignedID(_localHWID)
-	var clientId = fmt.Sprintf("%s", Global.hwID)
 
 	fmt.Printf("NetPassClient starting with Assigned ID: %s\n", Global.hwID)
+}
+
+// -------------------------
+func createTunnel() {
+
+	if Global.hwID == "" {
+		fmt.Println("No Hardware ID. Exiting...")
+		return
+	}
+
+	// 向伺服器領取分配的 ID (可能是固定的或隨日期變動的)
+	var clientId = fmt.Sprintf("%s", Global.hwID)
+
 	//sysTray.SetHwID(hwID)
 	//sysTray.SetStatus("Connecting")
 
@@ -758,6 +863,7 @@ func main() {
 
 	// 載入設定檔
 	loadConfig()
+	initHWID()
 
 	// 啟動時檢查更新
 	if Global.config.AutoUpdate {

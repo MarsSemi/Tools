@@ -12,10 +12,10 @@ echo "開始編譯 NetPass Client..."
 # 定義要編譯的平台
 # 格式: "GOOS/GOARCH/EXTENSION"
 PLATFORMS=(
-    "windows/amd64/.exe"
     "linux/amd64/"
     "linux/arm64/"
     "darwin/arm64/"
+    "windows/amd64/.exe"
 )
 
 # 獲取 Go 的完整路徑

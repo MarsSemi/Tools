@@ -1,6 +1,4 @@
 {
-  "name": "",
   "api_key": "",
-  "host": "https://netpass.mars-cloud.com",
-  "auto_update": false
+  "host": "https://netpass.mars-cloud.com"
 }
