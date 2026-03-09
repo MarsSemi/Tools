@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -379,6 +380,7 @@ func checkUpdate() {
 type Config struct {
 	ApiKey     string `json:"api_key"`
 	Host       string `json:"host"`
+	Name       string `json:"name"`
 	AutoUpdate bool   `json:"auto_update"`
 }
 
@@ -412,14 +414,19 @@ func loadConfig() {
 // getAssignedID 向伺服器請求分配的連線 ID
 func getAssignedID(localHWID string) string {
 	_apiKey := Global.config.ApiKey
+	_name := strings.TrimSpace(Global.config.Name)
 	if _apiKey == "" {
 		_apiKey = os.Getenv("NETPASS_KEY") // 仍保留環境變數作為備援
 	}
 
 	_url := fmt.Sprintf("%s/api/getID", strings.TrimSuffix(Global.config.Host, "/"))
 
-	// 準備 POST Form 資料
-	_formData := strings.NewReader(fmt.Sprintf("hwid=%s&key=%s", localHWID, _apiKey))
+	_form := url.Values{}
+	_form.Set("hwid", localHWID)
+	_form.Set("key", _apiKey)
+	if _name != "" {
+		_form.Set("name", _name)
+	}
 
 	_client := &http.Client{
 		Timeout: 10 * time.Second,
@@ -428,15 +435,32 @@ func getAssignedID(localHWID string) string {
 		},
 	}
 
-	_resp, err := _client.Post(_url, "application/x-www-form-urlencoded", _formData)
+	_resp, err := _client.Post(_url, "application/x-www-form-urlencoded", strings.NewReader(_form.Encode()))
 	if err != nil {
+		if _name != "" {
+			fmt.Printf("Failed to register device name %q via %s: %v\n", _name, _url, err)
+			return ""
+		}
 		fmt.Printf("Failed to get assigned ID from server: %v. Using local HWID.\n", err)
 		return localHWID
 	}
 	defer _resp.Body.Close()
 
 	if _resp.StatusCode != http.StatusOK {
-		fmt.Printf("Server returned error when assigning ID (%d). Using local HWID.\n", _resp.StatusCode)
+		_body, _ := io.ReadAll(_resp.Body)
+		_msg := strings.TrimSpace(string(_body))
+		if _msg == "" {
+			_msg = http.StatusText(_resp.StatusCode)
+		}
+		if _resp.StatusCode == http.StatusBadRequest || _resp.StatusCode == http.StatusConflict {
+			fmt.Printf("Device registration failed (%d): %s\n", _resp.StatusCode, _msg)
+			return ""
+		}
+		if _name != "" {
+			fmt.Printf("Device registration failed (%d) via %s: %s\n", _resp.StatusCode, _url, _msg)
+			return ""
+		}
+		fmt.Printf("Server returned error when assigning ID (%d): %s. Using local HWID.\n", _resp.StatusCode, _msg)
 		return localHWID
 	}
 
@@ -765,7 +789,12 @@ func initHWID() {
 	// 向伺服器領取分配的 ID (可能是固定的或隨日期變動的)
 	Global.hwID = getAssignedID(_localHWID)
 
-	fmt.Printf("NetPassClient starting with Assigned ID: %s\n", Global.hwID)
+	_name := strings.TrimSpace(Global.config.Name)
+	if _name == "" {
+		_name = "-"
+	}
+
+	fmt.Printf("NetPassClient starting with : %s/%s\n", Global.hwID, _name)
 }
 
 // -------------------------

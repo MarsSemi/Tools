@@ -1,4 +1,5 @@
 {
   "api_key": "",
-  "host": "https://netpass.mars-cloud.com"
+  "host": "https://netpass.mars-cloud.com",
+  "name": "MarsCloud-Test"
 }

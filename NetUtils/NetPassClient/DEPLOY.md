@@ -18,7 +18,8 @@
    ```json
    {
      "api_key": "your_api_key",
-     "host": "https://your-server.com:443"
+     "host": "https://your-server.com:443",
+     "name": "factory-line-01"
    }
    ```
 
@@ -54,6 +55,7 @@
 |------|------|------|
 | `api_key` | 伺服器核發的 API Key | `abc123def456...` |
 | `host` | 伺服器 URL | `https://netpass.mars-cloud.com:443` |
+| `name` | 可選設備別名，3-64 字元，僅允許 `a-z`、`0-9`、`.`、`_`、`-`，且不得重複 | `factory-line-01` |
 
 ## 常見部署場景
 
@@ -64,7 +66,7 @@
 1. 設定 config.json
 2. 執行 Client
 3. 記錄 Assigned ID
-4. 透過 `https://server/pass/{id}/{port}/` 訪問
+4. 透過 `https://server/pass/{id-or-name}/{port}/` 訪問
 
 ### 2. 多設備部署
 

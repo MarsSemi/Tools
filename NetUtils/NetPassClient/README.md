@@ -42,7 +42,8 @@ Client/
 ```json
 {
   "api_key": "your_issued_api_key",
-  "host": "https://your-server.com:443"
+  "host": "https://your-server.com:443",
+  "name": "office-gateway-01"
 }
 ```
 
@@ -52,6 +53,7 @@ Client/
 |------|------|------|
 | `api_key` | 伺服器核發的 API Key | 是 |
 | `host` | 伺服器 URL (http:// 或 https://) | 是 |
+| `name` | 可選設備別名，3-64 字元，需全站唯一，可用來替代 ID 存取 | 否 |
 
 ## 快速開始
 
@@ -60,9 +62,12 @@ Client/
 ```json
 {
   "api_key": "abc123...",
-  "host": "https://netpass.mars-cloud.com:443"
+  "host": "https://netpass.mars-cloud.com:443",
+  "name": "office-gateway-01"
 }
 ```
+
+若設定 `name`，Client 啟動時會先向 Server 註冊；`name` 若重複、格式錯誤，或 Server 無法註冊成功，Client 會直接停止，不會退回成本機 HWID。
 
 ### 2. 執行
 
@@ -81,10 +86,9 @@ Client/
 ```
 
 ### 3. 驗證
-執行後會顯示 Assigned ID，請記錄此 ID 以後續訪問：
+執行後會顯示目前使用的 `id/name`，請記錄以供後續訪問：
 ```
-[INFO] Assigned ID: abc123def456
-[INFO] Connected to server
+NetPassClient starting with : abc123def456/office-gateway-01
 ```
 
 ## 使用方式
@@ -95,6 +99,10 @@ Client/
 - 伺服器網域：`netpass.mars-cloud.com`
 - 設備 ID：`mydevice`
 - 本地服務連接埠：`8080`
+
+若 Client 註冊了 `name`，則下方 `mydevice` 可以直接使用該名稱。
+
+WebSSH 也可直接使用相同的 `name` 或 `id`。
 
 訪問本地 HTTP 服務：
 ```
@@ -180,6 +188,7 @@ sudo apt-get install gcc-mingw-w64
 **認證失敗**
 - 確認 `api_key` 正確且未過期
 - 聯繫管理員重新核發 API Key
+- 若有設定 `name`，確認該名稱未重複，且只包含 `a-z`、`0-9`、`.`、`_`、`-`
 
 ### 執行問題
 
